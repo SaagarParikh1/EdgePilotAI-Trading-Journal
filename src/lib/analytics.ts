@@ -3,7 +3,11 @@ import { clamp, formatCurrency, formatPercent } from "@/lib/utils";
 
 export interface SummaryMetrics {
   totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
   netPnl: number;
+  grossProfit: number;
+  grossLoss: number;
   winRate: number;
   profitFactor: number;
   avgR: number;
@@ -12,8 +16,10 @@ export interface SummaryMetrics {
   worstTrade?: Trade;
   averageRisk: number;
   stopRespectRate: number;
+  revengeLossAmount: number;
   revengeLossShare: number;
   fomoWinRate: number;
+  fomoTrades: number;
 }
 
 export interface DisciplineScore {
@@ -125,7 +131,11 @@ export function calculateSummary(trades: Trade[]): SummaryMetrics {
 
   return {
     totalTrades: trades.length,
+    winningTrades: wins.length,
+    losingTrades: losses.length,
     netPnl,
+    grossProfit,
+    grossLoss,
     winRate: trades.length ? (wins.length / trades.length) * 100 : 0,
     profitFactor: grossLoss ? grossProfit / grossLoss : grossProfit,
     avgR: average(trades.map((trade) => trade.rMultiple)),
@@ -136,10 +146,12 @@ export function calculateSummary(trades: Trade[]): SummaryMetrics {
     stopRespectRate: trades.length
       ? (trades.filter((trade) => trade.stopRespected).length / trades.length) * 100
       : 0,
+    revengeLossAmount: Math.abs(sum(revengeLosses.map((trade) => trade.pnl))),
     revengeLossShare: grossLoss ? (Math.abs(sum(revengeLosses.map((trade) => trade.pnl))) / grossLoss) * 100 : 0,
     fomoWinRate: fomoTrades.length
       ? (fomoTrades.filter((trade) => trade.pnl > 0).length / fomoTrades.length) * 100
-      : 0
+      : 0,
+    fomoTrades: fomoTrades.length
   };
 }
 
@@ -298,7 +310,7 @@ export function buildBehaviorIndicators(trades: Trade[]): BehaviorIndicator[] {
     return [
       {
         label: "No behavior sample",
-        value: "0 trades",
+        value: "No sample",
         detail: "Change the dataset scope or time range to calculate behavior indicators.",
         score: 0,
         tone: "cyan"
@@ -325,14 +337,17 @@ export function buildBehaviorIndicators(trades: Trade[]): BehaviorIndicator[] {
   const avgLoserHold = average(losses.map((trade) => trade.durationMinutes));
   const futuresPnl = sum(futures.map((trade) => trade.pnl));
   const maxTrades = dailyCounts.length ? Math.max(...dailyCounts) : 0;
+  const hasHoldComparison = winners.length > 0 && losses.length > 0;
 
   return [
     {
       label: "Loss-chasing",
-      value: formatCurrency(afterLossPnl),
-      detail: `${afterLossTrades.length} trades taken immediately after a loss`,
+      value: afterLossTrades.length ? formatCurrency(afterLossPnl) : "None",
+      detail: afterLossTrades.length
+        ? `${afterLossTrades.length} trades taken immediately after a loss`
+        : "No trades were taken immediately after a loss",
       score: clamp(100 - afterLossTrades.length * 5 - Math.max(0, -afterLossPnl) / 25, 0, 100),
-      tone: afterLossPnl < 0 ? "red" : "amber"
+      tone: afterLossTrades.length ? (afterLossPnl < 0 ? "red" : "amber") : "green"
     },
     {
       label: "Overtrading pressure",
@@ -343,36 +358,48 @@ export function buildBehaviorIndicators(trades: Trade[]): BehaviorIndicator[] {
     },
     {
       label: "Oversized risk",
-      value: `${oversized.length}`,
-      detail: `${formatPercent(trades.length ? (oversized.length / trades.length) * 100 : 0)} of trades risked more than 3%`,
+      value: oversized.length ? `${oversized.length}` : "None",
+      detail: oversized.length
+        ? `${formatPercent((oversized.length / trades.length) * 100)} of trades risked more than 3%`
+        : "No trades exceeded the 3% risk threshold",
       score: clamp(100 - oversized.length * 8, 0, 100),
       tone: oversized.length ? "amber" : "green"
     },
     {
       label: "High-stress trading",
-      value: `${highStress.length}`,
-      detail: `${formatCurrency(sum(highStress.map((trade) => trade.pnl)))} while stress was 8 or higher`,
+      value: highStress.length ? `${highStress.length}` : "None",
+      detail: highStress.length
+        ? `${formatCurrency(sum(highStress.map((trade) => trade.pnl)))} while stress was 8 or higher`
+        : "No trades were logged with stress at 8 or higher",
       score: clamp(100 - highStress.length * 9, 0, 100),
       tone: highStress.length ? "red" : "green"
     },
     {
       label: "Low-focus entries",
-      value: `${lowFocus.length}`,
-      detail: `${formatCurrency(sum(lowFocus.map((trade) => trade.pnl)))} while focus was 4 or lower`,
+      value: lowFocus.length ? `${lowFocus.length}` : "None",
+      detail: lowFocus.length
+        ? `${formatCurrency(sum(lowFocus.map((trade) => trade.pnl)))} while focus was 4 or lower`
+        : "No trades were logged with focus at 4 or lower",
       score: clamp(100 - lowFocus.length * 9, 0, 100),
       tone: lowFocus.length ? "red" : "green"
     },
     {
       label: "Loser hold time",
-      value: `${(avgLoserHold / Math.max(avgWinnerHold, 1)).toFixed(1)}x`,
-      detail: `Average loser hold ${avgLoserHold.toFixed(0)}m versus ${avgWinnerHold.toFixed(0)}m for winners`,
-      score: clamp(100 - Math.max(0, avgLoserHold / Math.max(avgWinnerHold, 1) - 1) * 35, 0, 100),
-      tone: avgLoserHold > avgWinnerHold * 1.7 ? "red" : "amber"
+      value: hasHoldComparison ? `${(avgLoserHold / Math.max(avgWinnerHold, 1)).toFixed(1)}x` : "No sample",
+      detail: hasHoldComparison
+        ? `Average loser hold ${avgLoserHold.toFixed(0)}m versus ${avgWinnerHold.toFixed(0)}m for winners`
+        : "Needs at least one winner and one loser to compare hold time",
+      score: hasHoldComparison
+        ? clamp(100 - Math.max(0, avgLoserHold / Math.max(avgWinnerHold, 1) - 1) * 35, 0, 100)
+        : 100,
+      tone: hasHoldComparison ? (avgLoserHold > avgWinnerHold * 1.7 ? "red" : "amber") : "cyan"
     },
     {
       label: "Futures drag",
-      value: formatCurrency(futuresPnl),
-      detail: `${futures.length} futures settlement rows included from the broker CSV`,
+      value: futures.length ? formatCurrency(futuresPnl) : "No futures",
+      detail: futures.length
+        ? `${futures.length} futures settlement rows included from the broker CSV`
+        : "No futures rows are included in this scope",
       score: futures.length ? clamp(65 + futuresPnl / 35, 0, 100) : 100,
       tone: futuresPnl < 0 ? "red" : futures.length ? "green" : "cyan"
     }
@@ -393,23 +420,29 @@ export function buildStrategyRecommendations(trades: Trade[]): StrategyRecommend
   }
 
   const sessions = groupBySession(trades);
+  const tradedSessions = sessions.filter((session) => session.trades > 0);
   const strategies = groupByStrategy(trades);
   const summary = calculateSummary(trades);
   const futures = trades.filter((trade) => trade.assetType === "Futures");
   const futuresPnl = sum(futures.map((trade) => trade.pnl));
   const losses = trades.filter((trade) => trade.pnl < 0);
   const avgLoss = Math.abs(average(losses.map((trade) => trade.pnl)));
-  const worstSession = [...sessions].sort((a, b) => a.pnl - b.pnl)[0];
+  const hasLosses = losses.length > 0;
+  const worstSession = [...tradedSessions].sort((a, b) => a.pnl - b.pnl)[0];
   const bestStrategy = strategies[0];
   const worstStrategy = [...strategies].sort((a, b) => a.pnl - b.pnl)[0];
 
   return [
     {
-      title: "Install a hard daily loss circuit breaker",
-      detail: `Your max drawdown in the selected range is ${formatCurrency(summary.maxDrawdown)}. Cap the day before one poor sequence becomes a behavior loop.`,
+      title: hasLosses ? "Install a hard daily loss circuit breaker" : "Keep a daily loss circuit breaker ready",
+      detail: hasLosses
+        ? `Your max drawdown in the selected range is ${formatCurrency(summary.maxDrawdown)}. Cap the day before one poor sequence becomes a behavior loop.`
+        : "This view has no realized losses yet. Keep the circuit breaker defined before the next losing sequence appears.",
       rule: `Stop for the day at ${formatCurrency(-Math.max(avgLoss * 1.5, 150))} realized PnL or after two closed losses.`,
-      impact: "Limits revenge trades and prevents drawdown acceleration.",
-      tone: "red"
+      impact: hasLosses
+        ? "Limits revenge trades and prevents drawdown acceleration."
+        : "Prevents a clean sample from turning into uncontrolled loss recovery.",
+      tone: hasLosses ? "red" : "cyan"
     },
     {
       title: "Separate futures from equity and options review",
@@ -451,7 +484,7 @@ export function detectInsights(trades: Trade[]): Insight[] {
       {
         title: "No trades in selected view",
         detail: "Change the dataset scope or time range to generate behavioral and performance insights.",
-        metric: "0 trades",
+        metric: "No sample",
         category: "Execution",
         severity: "warning"
       }
@@ -475,41 +508,61 @@ export function detectInsights(trades: Trade[]): Insight[] {
   const worstEmotion = emotionStats[0];
   const openSession = sessions.find((session) => session.name === "Open");
   const middaySession = sessions.find((session) => session.name === "Midday");
+  const lowRiskPnl = sum(lowRiskTrades.map((trade) => trade.pnl));
+  const fridayPnl = sum(fridayTrades.map((trade) => trade.pnl));
+  const afterNoonWinRate = noonTrades.length
+    ? (noonTrades.filter((trade) => trade.pnl > 0).length / noonTrades.length) * 100
+    : 0;
+  const hasHoldComparison = winners.length > 0 && losers.length > 0;
 
   const insights: Insight[] = [
     {
-      title: "Revenge trades are absorbing loss capacity",
-      detail: `Revenge-labeled trades represent ${formatPercent(summary.revengeLossShare)} of realized losses while making up a much smaller share of total volume.`,
-      metric: `${formatPercent(summary.revengeLossShare)} loss share`,
+      title: summary.grossLoss
+        ? summary.revengeLossAmount
+          ? "Revenge trades are absorbing loss capacity"
+          : "No revenge-loss drag detected"
+        : "No realized-loss sample yet",
+      detail: summary.grossLoss
+        ? summary.revengeLossAmount
+          ? `Revenge-labeled trades represent ${formatPercent(summary.revengeLossShare)} of realized losses while making up a much smaller share of total volume.`
+          : "No losing revenge-labeled trades are present in this selected view."
+        : "There are no realized losses in this selected view, so revenge loss share is paused.",
+      metric: summary.grossLoss
+        ? summary.revengeLossAmount
+          ? `${formatPercent(summary.revengeLossShare)} loss share`
+          : "None"
+        : "No losses",
       category: "Psychology",
-      severity: summary.revengeLossShare > 30 ? "critical" : "warning"
+      severity: summary.grossLoss && summary.revengeLossShare > 30 ? "critical" : summary.revengeLossAmount ? "warning" : "positive"
     },
     {
       title: "Post-loss sequences need a hard stop rule",
       detail: afterTwoLosses.length
         ? `Trades after two consecutive losses produced ${formatCurrency(sum(afterTwoLosses.map((trade) => trade.pnl)))} across ${afterTwoLosses.length} entries.`
         : "No trades were taken after two consecutive losses in this sample.",
-      metric: `${afterTwoLosses.length} triggered`,
+      metric: afterTwoLosses.length ? `${afterTwoLosses.length} triggered` : "None triggered",
       category: "Execution",
       severity: afterTwoLosses.length ? "critical" : "positive"
     },
     {
-      title: "Risk under 3 percent is your cleanest operating zone",
-      detail: `Trades at or below 3 percent risk produced ${formatCurrency(sum(lowRiskTrades.map((trade) => trade.pnl)))} with ${formatPercent(
-        lowRiskTrades.length
-          ? (lowRiskTrades.filter((trade) => trade.pnl > 0).length / lowRiskTrades.length) * 100
-          : 0
-      )} win rate.`,
-      metric: "<= 3% risk",
+      title: lowRiskTrades.length ? "Risk under 3 percent is your cleanest operating zone" : "No low-risk sample yet",
+      detail: lowRiskTrades.length
+        ? `Trades at or below 3 percent risk produced ${formatCurrency(lowRiskPnl)} with ${formatPercent(
+            (lowRiskTrades.filter((trade) => trade.pnl > 0).length / lowRiskTrades.length) * 100
+          )} win rate.`
+        : "No trades in this view have risk at or below 3 percent, so the low-risk operating zone cannot be benchmarked yet.",
+      metric: lowRiskTrades.length ? "<= 3% risk" : "No sample",
       category: "Risk",
-      severity: "positive"
+      severity: lowRiskTrades.length && lowRiskPnl >= 0 ? "positive" : "warning"
     },
     {
-      title: "Midday execution is the largest timing leak",
-      detail: `Midday trades are at ${formatCurrency(middaySession?.pnl ?? 0)} compared with ${formatCurrency(openSession?.pnl ?? 0)} during the open.`,
-      metric: `${formatCurrency(middaySession?.pnl ?? 0)}`,
+      title: middaySession?.trades ? "Midday execution needs review" : "No midday sample yet",
+      detail: middaySession?.trades
+        ? `Midday trades are at ${formatCurrency(middaySession.pnl)} compared with ${formatCurrency(openSession?.pnl ?? 0)} during the open.`
+        : "No trades in this view were taken during midday, so the timing split is waiting for more data.",
+      metric: middaySession?.trades ? `${formatCurrency(middaySession.pnl)}` : "No sample",
       category: "Timing",
-      severity: (middaySession?.pnl ?? 0) < 0 ? "critical" : "warning"
+      severity: middaySession?.trades && middaySession.pnl < 0 ? "critical" : "warning"
     },
     {
       title: `${bestStrategy.name} is the current edge`,
@@ -526,27 +579,31 @@ export function detectInsights(trades: Trade[]): Insight[] {
       severity: worstEmotion.pnl < 0 ? "critical" : "warning"
     },
     {
-      title: "Friday needs a stricter noon cutoff",
-      detail: `Friday trades are net ${formatCurrency(sum(fridayTrades.map((trade) => trade.pnl)))} and the damage clusters after the morning plan is finished.`,
-      metric: `${fridayTrades.length} trades`,
+      title: fridayTrades.length ? "Friday needs a stricter noon cutoff" : "No Friday sample yet",
+      detail: fridayTrades.length
+        ? `Friday trades are net ${formatCurrency(fridayPnl)} and should be reviewed separately from the rest of the week.`
+        : "There are no Friday trades in the selected view, so weekday timing risk is incomplete.",
+      metric: fridayTrades.length ? `${fridayTrades.length} trades` : "No sample",
       category: "Timing",
-      severity: "warning"
+      severity: fridayTrades.length && fridayPnl < 0 ? "warning" : "positive"
     },
     {
-      title: "Losers are being held materially longer",
-      detail: `Average loser hold is ${avgLoserHold.toFixed(0)} minutes versus ${avgWinnerHold.toFixed(0)} minutes for winners.`,
-      metric: `${(avgLoserHold / Math.max(avgWinnerHold, 1)).toFixed(1)}x longer`,
+      title: hasHoldComparison ? "Losers are being held materially longer" : "Hold-time comparison needs more samples",
+      detail: hasHoldComparison
+        ? `Average loser hold is ${avgLoserHold.toFixed(0)} minutes versus ${avgWinnerHold.toFixed(0)} minutes for winners.`
+        : "This view needs at least one winning trade and one losing trade before hold-time behavior can be compared.",
+      metric: hasHoldComparison ? `${(avgLoserHold / Math.max(avgWinnerHold, 1)).toFixed(1)}x longer` : "No sample",
       category: "Execution",
-      severity: avgLoserHold > avgWinnerHold * 1.7 ? "critical" : "warning"
+      severity: hasHoldComparison && avgLoserHold > avgWinnerHold * 1.7 ? "critical" : "warning"
     },
     {
-      title: "After noon, selectivity drops sharply",
-      detail: `Trades after noon have a ${formatPercent(
-        noonTrades.length ? (noonTrades.filter((trade) => trade.pnl > 0).length / noonTrades.length) * 100 : 0
-      )} win rate and lower rule adherence than morning trades.`,
-      metric: `${noonTrades.length} trades`,
+      title: noonTrades.length ? "After noon, selectivity needs monitoring" : "No after-noon sample yet",
+      detail: noonTrades.length
+        ? `Trades after noon have a ${formatPercent(afterNoonWinRate)} win rate and should be compared against morning execution.`
+        : "No trades in this view were taken after noon, so late-session selectivity is not calculated.",
+      metric: noonTrades.length ? `${noonTrades.length} trades` : "No sample",
       category: "Timing",
-      severity: "warning"
+      severity: noonTrades.length && afterNoonWinRate < 45 ? "warning" : "positive"
     }
   ];
 

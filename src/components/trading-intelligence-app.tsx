@@ -12,6 +12,7 @@ import {
   CircleDollarSign,
   Flame,
   Gauge,
+  Info,
   LineChart as LineChartIcon,
   MessageSquareText,
   PieChart,
@@ -19,6 +20,7 @@ import {
   ShieldCheck,
   Sparkles,
   Upload,
+  X,
   Zap
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -73,6 +75,14 @@ type ScopeHealthItem = {
   detail: string;
   tone: "green" | "amber" | "red";
 };
+type MetricTrend = "up" | "down" | "neutral";
+type MetricCalculation = {
+  title: string;
+  description: string;
+  formula: string;
+  inputs: string[];
+  note?: string;
+};
 
 const navItems: Array<{ id: ActiveView; label: string; icon: typeof Activity }> = [
   { id: "overview", label: "Command", icon: Activity },
@@ -118,7 +128,9 @@ export function TradingIntelligenceApp() {
   const [activeRange, setActiveRange] = useState<TimeRange>("ALL");
   const [activeScope, setActiveScope] = useState<TradeScope>("ALL");
   const [selectedTrade, setSelectedTrade] = useState<Trade>(sampleTrades[sampleTrades.length - 1]);
-  const [importStatus, setImportStatus] = useState("Mock broker sync active");
+  const [hasImportedCsv, setHasImportedCsv] = useState(false);
+  const [importStatus, setImportStatus] = useState("Import a CSV to activate analytics");
+  const [activeCalculation, setActiveCalculation] = useState<MetricCalculation | null>(null);
   const [coachInput, setCoachInput] = useState("What is my biggest weakness?");
   const [coachMessages, setCoachMessages] = useState<CoachMessage[]>([
     {
@@ -128,6 +140,7 @@ export function TradingIntelligenceApp() {
     }
   ]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewLocked = !hasImportedCsv;
 
   const scopeCounts = useMemo(() => buildScopeCounts(trades), [trades]);
   const scopeTrades = useMemo(() => filterTradesByScope(trades, activeScope), [trades, activeScope]);
@@ -140,6 +153,7 @@ export function TradingIntelligenceApp() {
   const emptyScopeLabel =
     activeScope === "ALL" ? "trades" : activeScope === "FUTURES" ? "futures trades" : "stocks/options trades";
   const tradeCountLabel = activeScope === "ALL" ? "trades" : activeScope === "FUTURES" ? "futures" : "stocks/options";
+  const hasScopedTrades = scopedTrades.length > 0;
   const rangeDetail = useMemo(() => formatRangeDetail(scopedTrades), [scopedTrades]);
   const summary = useMemo(() => calculateSummary(scopedTrades), [scopedTrades]);
   const discipline = useMemo(() => calculateDisciplineScore(scopedTrades), [scopedTrades]);
@@ -156,7 +170,37 @@ export function TradingIntelligenceApp() {
   const burnout = useMemo(() => buildBurnoutSignal(scopedTrades, psychologyLogs), [scopedTrades, psychologyLogs]);
   const ledgerTrades = useMemo(() => [...scopedTrades].sort((a, b) => tradeTime(b) - tradeTime(a)), [scopedTrades]);
   const scopeHealthItems = useMemo<ScopeHealthItem[]>(
-    () => [
+    () => {
+      if (!hasScopedTrades) {
+        return [
+          {
+            label: "Max Drawdown",
+            value: "No sample",
+            detail: "Needs closed trades in this view",
+            tone: "amber"
+          },
+          {
+            label: "Expectancy",
+            value: "No sample",
+            detail: "Average R appears after import/filter data",
+            tone: "amber"
+          },
+          {
+            label: "Stop Respect",
+            value: "No sample",
+            detail: "Requires trades with risk-plan status",
+            tone: "amber"
+          },
+          {
+            label: "Best Setup",
+            value: "No setup",
+            detail: "No setup bucket in the selected view",
+            tone: "amber"
+          }
+        ];
+      }
+
+      return [
       {
         label: "Max Drawdown",
         value: formatCurrency(summary.maxDrawdown),
@@ -181,9 +225,91 @@ export function TradingIntelligenceApp() {
         detail: strategies[0] ? `${formatCurrency(strategies[0].pnl)} net in scope` : "No setup sample yet",
         tone: (strategies[0]?.pnl ?? 0) >= 0 ? "green" : "red"
       }
-    ],
-    [strategies, summary.avgR, summary.maxDrawdown, summary.stopRespectRate]
+      ];
+    },
+    [hasScopedTrades, strategies, summary.avgR, summary.maxDrawdown, summary.stopRespectRate]
   );
+  const metricCalculations = useMemo<Record<string, MetricCalculation>>(
+    () => ({
+      netPnl: {
+        title: "Net PnL",
+        description: "Total realized profit and loss for the selected dataset and time range.",
+        formula: "sum(trade PnL)",
+        inputs: hasScopedTrades
+          ? [
+              `${summary.totalTrades} closed trades in scope`,
+              `Gross profit: ${formatCurrency(summary.grossProfit)}`,
+              `Gross loss: ${summary.grossLoss ? formatCurrency(-summary.grossLoss) : "No losses"}`
+            ]
+          : ["No closed trades in the selected dataset and time range."],
+        note: hasScopedTrades ? undefined : "Import a CSV or expand the selected range to calculate realized PnL."
+      },
+      discipline: {
+        title: "Discipline Score",
+        description: "Composite execution quality score based on risk, stops, emotional control, selectivity, and consistency.",
+        formula: "risk mgmt 24% + stop respect 24% + emotional control 22% + selectivity 12% + consistency 18%",
+        inputs: hasScopedTrades
+          ? [
+              `Risk management: ${discipline.riskManagement}`,
+              `Stop respect: ${discipline.stopRespect}`,
+              `Emotional control: ${discipline.emotionalControl}`,
+              `Selectivity: ${discipline.selectivity}`,
+              `Consistency: ${discipline.consistency}`
+            ]
+          : ["No closed trades in the selected view, so the score is paused."],
+        note: hasScopedTrades ? undefined : "The score only appears after there is enough execution data in scope."
+      },
+      winRate: {
+        title: "Win Rate",
+        description: "Share of closed trades with positive realized PnL.",
+        formula: "(winning trades / total trades) x 100",
+        inputs: hasScopedTrades
+          ? [
+              `Winning trades: ${summary.winningTrades}`,
+              `Losing trades: ${summary.losingTrades}`,
+              `Total trades: ${summary.totalTrades}`
+            ]
+          : ["No closed trades in the selected view."],
+        note: hasScopedTrades ? undefined : "No trades in the selected view yet."
+      },
+      revengeLossShare: {
+        title: "Revenge Loss Share",
+        description: "How much of total realized losses came from trades classified as revenge trades.",
+        formula: "abs(revenge trade losses) / abs(all losing trade PnL) x 100",
+        inputs: summary.grossLoss
+          ? [
+              `Revenge-trade losses: ${
+                summary.revengeLossAmount ? formatCurrency(-summary.revengeLossAmount) : "None"
+              }`,
+              `Total realized losses: ${formatCurrency(-summary.grossLoss)}`,
+              `Revenge loss share: ${summary.revengeLossAmount ? formatPercent(summary.revengeLossShare) : "None"}`
+            ]
+          : ["No realized losses in the selected view."],
+        note: summary.grossLoss
+          ? "Only losing revenge trades count toward this metric. Winning revenge trades are excluded from loss share."
+          : "No realized losses in this view, so loss share is not calculated."
+      }
+    }),
+    [discipline, hasScopedTrades, summary]
+  );
+  const netPnlValue = hasScopedTrades ? formatCurrency(summary.netPnl) : "No trades";
+  const disciplineValue = hasScopedTrades ? `${discipline.overall}` : "No data";
+  const winRateValue = hasScopedTrades ? formatPercent(summary.winRate) : "No sample";
+  const profitFactorLabel = formatProfitFactor(summary);
+  const metricTradeDetail = hasScopedTrades
+    ? `${summary.totalTrades} ${tradeCountLabel} / ${activeRangeLabel}`
+    : "No trades in view";
+  const winRateDetail = !hasScopedTrades
+    ? "No trades in view"
+    : profitFactorLabel === "No losses"
+      ? "Profit factor: no losses"
+      : `${profitFactorLabel} profit factor`;
+  const revengeLossShareValue = formatRevengeLossShareValue(summary);
+  const revengeLossShareDetail = !summary.grossLoss
+    ? "No realized losses"
+    : summary.revengeLossAmount
+      ? "Primary psychology leak"
+      : "No revenge losses detected";
   const selectedLedgerTrade = ledgerTrades.find((trade) => trade.id === selectedTrade.id) ?? ledgerTrades[0];
   const weakestSession = useMemo(
     () => sessions.filter((session) => session.trades).sort((a, b) => a.pnl - b.pnl)[0],
@@ -213,6 +339,7 @@ export function TradingIntelligenceApp() {
 
         setTrades(imported);
         setSelectedTrade(imported[imported.length - 1]);
+        setHasImportedCsv(true);
         setActiveScope("ALL");
         setActiveRange("ALL");
         setImportStatus(
@@ -242,6 +369,11 @@ export function TradingIntelligenceApp() {
     <main className="min-h-screen overflow-hidden bg-base-950 text-zinc-100">
       <div className="terminal-grid fixed inset-0 opacity-60" />
       <div className="scanline fixed inset-0 pointer-events-none" />
+      <AnimatePresence>
+        {activeCalculation && (
+          <CalculationPopup info={activeCalculation} onClose={() => setActiveCalculation(null)} />
+        )}
+      </AnimatePresence>
 
       <div className="relative flex min-h-screen">
         <aside className="hidden w-[248px] shrink-0 border-r border-white/10 bg-base-900/82 px-4 py-5 backdrop-blur-xl lg:flex lg:flex-col">
@@ -255,7 +387,7 @@ export function TradingIntelligenceApp() {
             </div>
           </div>
 
-          <nav className="mt-8 space-y-1">
+          <nav className={cn("mt-8 space-y-1 transition", previewLocked && "pointer-events-none select-none opacity-35 grayscale")}>
             {navItems.map((item) => {
               const Icon = item.icon;
               return (
@@ -281,7 +413,7 @@ export function TradingIntelligenceApp() {
 
           <div className="mt-8 border-t border-white/10 pt-5">
             <p className="text-xs uppercase text-zinc-500">Import Engine</p>
-            <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className={cn("mt-3 grid grid-cols-2 gap-2 transition", previewLocked && "opacity-55 grayscale")}>
               {brokerOptions.map((broker) => (
                 <span key={broker} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-[11px] text-zinc-400">
                   {broker}
@@ -302,10 +434,19 @@ export function TradingIntelligenceApp() {
           <div className="mt-auto border-t border-white/10 pt-5">
             <div className="flex items-center justify-between">
               <span className="text-xs text-zinc-500">AI Memory</span>
-              <span className="rounded-full bg-signal-green/10 px-2 py-1 text-[11px] text-signal-green">Online</span>
+              <span
+                className={cn(
+                  "rounded-full px-2 py-1 text-[11px]",
+                  previewLocked ? "bg-white/[0.04] text-zinc-500" : "bg-signal-green/10 text-signal-green"
+                )}
+              >
+                {previewLocked ? "Waiting" : "Online"}
+              </span>
             </div>
             <p className="mt-2 text-sm leading-6 text-zinc-300">
-              Tracking revenge loops, overtrading windows, and risk drift from trade history.
+              {previewLocked
+                ? "Import closed trade history to unlock behavioral memory and coaching."
+                : "Tracking revenge loops, overtrading windows, and risk drift from trade history."}
             </p>
           </div>
         </aside>
@@ -323,7 +464,7 @@ export function TradingIntelligenceApp() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className={cn("flex flex-wrap items-center gap-2 transition", previewLocked && "opacity-40 grayscale")}>
                 {marketTape.map((item) => (
                   <div key={item.label} className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2">
                     <span className="mr-2 text-xs text-zinc-500">{item.label}</span>
@@ -342,45 +483,63 @@ export function TradingIntelligenceApp() {
           </header>
 
           <div className="space-y-5 px-4 py-5 md:px-6">
+            {previewLocked && <PreviewGateBanner onImport={() => fileInputRef.current?.click()} />}
+
             <motion.section
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.45 }}
-              className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"
+              className={cn(
+                "grid gap-3 transition md:grid-cols-2 xl:grid-cols-4",
+                previewLocked && "pointer-events-none select-none opacity-35 grayscale"
+              )}
             >
               <MetricTile
                 label="Net PnL"
-                value={formatCurrency(summary.netPnl)}
-                detail={`${summary.totalTrades} ${tradeCountLabel} / ${activeRangeLabel}`}
+                value={netPnlValue}
+                detail={metricTradeDetail}
                 icon={CircleDollarSign}
-                trend={summary.netPnl >= 0 ? "up" : "down"}
+                trend={hasScopedTrades ? (summary.netPnl >= 0 ? "up" : "down") : "neutral"}
+                calculation={metricCalculations.netPnl}
+                onOpenCalculation={setActiveCalculation}
               />
               <MetricTile
                 label="Discipline Score"
-                value={`${discipline.overall}`}
+                value={disciplineValue}
                 detail={discipline.label}
                 icon={ShieldCheck}
-                trend={discipline.overall >= 70 ? "up" : "down"}
+                trend={hasScopedTrades ? (discipline.overall >= 70 ? "up" : "down") : "neutral"}
+                calculation={metricCalculations.discipline}
+                onOpenCalculation={setActiveCalculation}
               />
               <MetricTile
                 label="Win Rate"
-                value={formatPercent(summary.winRate)}
-                detail={`${summary.profitFactor.toFixed(2)} profit factor`}
+                value={winRateValue}
+                detail={winRateDetail}
                 icon={Gauge}
-                trend={summary.winRate >= 50 ? "up" : "down"}
+                trend={hasScopedTrades ? (summary.winRate >= 50 ? "up" : "down") : "neutral"}
+                calculation={metricCalculations.winRate}
+                onOpenCalculation={setActiveCalculation}
               />
               <MetricTile
                 label="Revenge Loss Share"
-                value={formatPercent(summary.revengeLossShare)}
-                detail="Primary psychology leak"
+                value={revengeLossShareValue}
+                detail={revengeLossShareDetail}
                 icon={Flame}
-                trend={summary.revengeLossShare > 30 ? "down" : "up"}
+                trend={summary.grossLoss ? (summary.revengeLossShare > 30 ? "down" : "up") : "neutral"}
+                calculation={metricCalculations.revengeLossShare}
+                onOpenCalculation={setActiveCalculation}
               />
             </motion.section>
 
             <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
               <div className="min-w-0 space-y-5">
-                <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
+                <div
+                  className={cn(
+                    "flex flex-col gap-3 transition 2xl:flex-row 2xl:items-center 2xl:justify-between",
+                    previewLocked && "pointer-events-none select-none opacity-35 grayscale"
+                  )}
+                >
                   <SegmentedNav activeView={activeView} onChange={setActiveView} />
                   <TradeScopeSelector
                     activeScope={activeScope}
@@ -403,7 +562,12 @@ export function TradingIntelligenceApp() {
                         title="Performance Intelligence"
                         eyebrow={`Equity, drawdown, and execution quality / ${activeScopeDetailLabel} / ${rangeDetail}`}
                         action={
-                          <div className="flex flex-wrap items-center justify-end gap-2">
+                          <div
+                            className={cn(
+                              "flex flex-wrap items-center justify-end gap-2 transition",
+                              previewLocked && "pointer-events-none select-none opacity-35 grayscale"
+                            )}
+                          >
                             <TimeRangeSelector activeRange={activeRange} onChange={setActiveRange} />
                             <StatusBadge
                               tone={summary.bestTrade ? "green" : "amber"}
@@ -412,75 +576,90 @@ export function TradingIntelligenceApp() {
                           </div>
                         }
                       >
-                        <div className="h-[320px]">
-                          {equityCurve.length ? (
-                            <ResponsiveContainer width="100%" height="100%">
-                              <AreaChart data={zeroPlaneCurve} margin={{ top: 12, right: 16, left: -12, bottom: 0 }}>
-                                <defs>
-                                  <linearGradient id="equityPositiveFill" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#4dff88" stopOpacity={0.35} />
-                                    <stop offset="95%" stopColor="#4dff88" stopOpacity={0.02} />
-                                  </linearGradient>
-                                  <linearGradient id="equityNegativeFill" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#ff5f73" stopOpacity={0.05} />
-                                    <stop offset="95%" stopColor="#ff5f73" stopOpacity={0.35} />
-                                  </linearGradient>
-                                </defs>
-                                <CartesianGrid stroke="#ffffff12" vertical={false} />
-                                <XAxis
-                                  dataKey="label"
-                                  stroke="#71717a"
-                                  tickLine={false}
-                                  axisLine={false}
-                                  fontSize={12}
-                                  minTickGap={34}
-                                />
-                                <YAxis
-                                  stroke="#71717a"
-                                  tickLine={false}
-                                  axisLine={false}
-                                  fontSize={12}
-                                  domain={[(dataMin: number) => Math.min(0, dataMin), (dataMax: number) => Math.max(0, dataMax)]}
-                                  tickFormatter={(value) => formatCompactCurrency(Number(value))}
-                                />
-                                <Tooltip content={<EquityChartTooltip />} cursor={{ stroke: "#ffffff26", strokeWidth: 1 }} />
-                                <ReferenceLine y={0} stroke="#ffffff45" strokeDasharray="5 5" />
-                                <Area
-                                  type="monotone"
-                                  dataKey="positiveEquity"
-                                  name="Equity"
-                                  stroke="#4dff88"
-                                  fill="url(#equityPositiveFill)"
-                                  strokeWidth={2.5}
-                                  baseValue={0}
-                                  dot={false}
-                                  activeDot={{ r: 5, fill: "#4dff88", stroke: "#050705", strokeWidth: 2 }}
-                                />
-                                <Area
-                                  type="monotone"
-                                  dataKey="negativeEquity"
-                                  name="Equity"
-                                  stroke="#ff5f73"
-                                  fill="url(#equityNegativeFill)"
-                                  strokeWidth={2.5}
-                                  baseValue={0}
-                                  dot={false}
-                                  activeDot={{ r: 5, fill: "#ff5f73", stroke: "#050705", strokeWidth: 2 }}
-                                />
-                                <Line type="monotone" dataKey="discipline" stroke="#4ad8ff" strokeWidth={1.5} dot={false} />
-                              </AreaChart>
-                            </ResponsiveContainer>
-                          ) : (
-                            <EmptyState
-                              title="No performance data"
-                              detail="Change the dataset scope or time range to plot closed trades."
-                            />
-                          )}
+                        <div className="relative h-[320px]">
+                          <div
+                            className={cn(
+                              "h-full transition",
+                              previewLocked && "pointer-events-none select-none opacity-25 grayscale"
+                            )}
+                          >
+                            {equityCurve.length ? (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart data={zeroPlaneCurve} margin={{ top: 12, right: 16, left: -12, bottom: 0 }}>
+                                  <defs>
+                                    <linearGradient id="equityPositiveFill" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="5%" stopColor="#4dff88" stopOpacity={0.35} />
+                                      <stop offset="95%" stopColor="#4dff88" stopOpacity={0.02} />
+                                    </linearGradient>
+                                    <linearGradient id="equityNegativeFill" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="5%" stopColor="#ff5f73" stopOpacity={0.05} />
+                                      <stop offset="95%" stopColor="#ff5f73" stopOpacity={0.35} />
+                                    </linearGradient>
+                                  </defs>
+                                  <CartesianGrid stroke="#ffffff12" vertical={false} />
+                                  <XAxis
+                                    dataKey="label"
+                                    stroke="#71717a"
+                                    tickLine={false}
+                                    axisLine={false}
+                                    fontSize={12}
+                                    minTickGap={34}
+                                  />
+                                  <YAxis
+                                    stroke="#71717a"
+                                    tickLine={false}
+                                    axisLine={false}
+                                    fontSize={12}
+                                    domain={[(dataMin: number) => Math.min(0, dataMin), (dataMax: number) => Math.max(0, dataMax)]}
+                                    tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                                  />
+                                  <Tooltip content={<EquityChartTooltip />} cursor={{ stroke: "#ffffff26", strokeWidth: 1 }} />
+                                  <ReferenceLine y={0} stroke="#ffffff45" strokeDasharray="5 5" />
+                                  <Area
+                                    type="monotone"
+                                    dataKey="positiveEquity"
+                                    name="Equity"
+                                    stroke="#4dff88"
+                                    fill="url(#equityPositiveFill)"
+                                    strokeWidth={2.5}
+                                    baseValue={0}
+                                    dot={false}
+                                    activeDot={{ r: 5, fill: "#4dff88", stroke: "#050705", strokeWidth: 2 }}
+                                  />
+                                  <Area
+                                    type="monotone"
+                                    dataKey="negativeEquity"
+                                    name="Equity"
+                                    stroke="#ff5f73"
+                                    fill="url(#equityNegativeFill)"
+                                    strokeWidth={2.5}
+                                    baseValue={0}
+                                    dot={false}
+                                    activeDot={{ r: 5, fill: "#ff5f73", stroke: "#050705", strokeWidth: 2 }}
+                                  />
+                                  <Line type="monotone" dataKey="discipline" stroke="#4ad8ff" strokeWidth={1.5} dot={false} />
+                                </AreaChart>
+                              </ResponsiveContainer>
+                            ) : (
+                              <EmptyState
+                                title="No performance data"
+                                detail="Change the dataset scope or time range to plot closed trades."
+                              />
+                            )}
+                          </div>
+                          {previewLocked && <ImportCsvPrompt onImport={() => fileInputRef.current?.click()} />}
                         </div>
-                        <ScopeHealthStrip items={scopeHealthItems} />
+                        <div className={cn("transition", previewLocked && "pointer-events-none select-none opacity-35 grayscale")}>
+                          <ScopeHealthStrip items={scopeHealthItems} />
+                        </div>
                       </Panel>
 
-                      <div className="grid gap-5 xl:grid-cols-[0.92fr_1.08fr]">
+                      <div
+                        className={cn(
+                          "grid gap-5 transition xl:grid-cols-[0.92fr_1.08fr]",
+                          previewLocked && "pointer-events-none select-none opacity-35 grayscale"
+                        )}
+                      >
                         <Panel title="Behavioral Pattern Detection" eyebrow="Highest signal findings">
                           <div className="space-y-3">
                             {insights.slice(0, 5).map((insight) => (
@@ -491,25 +670,29 @@ export function TradingIntelligenceApp() {
 
                         <Panel title="Session Quality" eyebrow="Time-based performance split">
                           <div className="h-[265px]">
-                            <ResponsiveContainer width="100%" height="100%">
-                              <BarChart data={sessions} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
-                                <CartesianGrid stroke="#ffffff12" vertical={false} />
-                                <XAxis dataKey="name" stroke="#71717a" tickLine={false} axisLine={false} fontSize={12} />
-                                <YAxis
-                                  stroke="#71717a"
-                                  tickLine={false}
-                                  axisLine={false}
-                                  fontSize={12}
-                                  tickFormatter={(value) => formatCompactCurrency(Number(value))}
-                                />
-                                <Tooltip content={<ChartTooltip valuePrefix="$" />} />
-                                <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
-                                  {sessions.map((session) => (
-                                    <Cell key={session.name} fill={session.pnl >= 0 ? "#4dff88" : "#ff5f73"} />
-                                  ))}
-                                </Bar>
-                              </BarChart>
-                            </ResponsiveContainer>
+                            {hasScopedTrades ? (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={sessions} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                                  <CartesianGrid stroke="#ffffff12" vertical={false} />
+                                  <XAxis dataKey="name" stroke="#71717a" tickLine={false} axisLine={false} fontSize={12} />
+                                  <YAxis
+                                    stroke="#71717a"
+                                    tickLine={false}
+                                    axisLine={false}
+                                    fontSize={12}
+                                    tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                                  />
+                                  <Tooltip content={<ChartTooltip valuePrefix="$" />} />
+                                  <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
+                                    {sessions.map((session) => (
+                                      <Cell key={session.name} fill={session.pnl >= 0 ? "#4dff88" : "#ff5f73"} />
+                                    ))}
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                            ) : (
+                              <EmptyState title="No session sample" detail="Session splits appear after this view has closed trades." />
+                            )}
                           </div>
                         </Panel>
                       </div>
@@ -542,25 +725,29 @@ export function TradingIntelligenceApp() {
                           action={<StatusBadge tone={burnout.score > 65 ? "red" : "amber"} label={burnout.label} />}
                         >
                           <div className="h-[300px]">
-                            <ResponsiveContainer width="100%" height="100%">
-                              <BarChart data={psychologyMatrix} margin={{ top: 12, right: 8, left: -18, bottom: 0 }}>
-                                <CartesianGrid stroke="#ffffff12" vertical={false} />
-                                <XAxis dataKey="name" stroke="#71717a" tickLine={false} axisLine={false} fontSize={12} />
-                                <YAxis
-                                  stroke="#71717a"
-                                  tickLine={false}
-                                  axisLine={false}
-                                  fontSize={12}
-                                  tickFormatter={(value) => formatCompactCurrency(Number(value))}
-                                />
-                                <Tooltip content={<ChartTooltip valuePrefix="$" />} />
-                                <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
-                                  {psychologyMatrix.map((bucket) => (
-                                    <Cell key={bucket.name} fill={bucket.pnl >= 0 ? "#4ad8ff" : "#ff5f73"} />
-                                  ))}
-                                </Bar>
-                              </BarChart>
-                            </ResponsiveContainer>
+                            {hasScopedTrades ? (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={psychologyMatrix} margin={{ top: 12, right: 8, left: -18, bottom: 0 }}>
+                                  <CartesianGrid stroke="#ffffff12" vertical={false} />
+                                  <XAxis dataKey="name" stroke="#71717a" tickLine={false} axisLine={false} fontSize={12} />
+                                  <YAxis
+                                    stroke="#71717a"
+                                    tickLine={false}
+                                    axisLine={false}
+                                    fontSize={12}
+                                    tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                                  />
+                                  <Tooltip content={<ChartTooltip valuePrefix="$" />} />
+                                  <Bar dataKey="pnl" radius={[6, 6, 0, 0]}>
+                                    {psychologyMatrix.map((bucket) => (
+                                      <Cell key={bucket.name} fill={bucket.pnl >= 0 ? "#4ad8ff" : "#ff5f73"} />
+                                    ))}
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                            ) : (
+                              <EmptyState title="No psychology sample" detail="Stress-band diagnostics need closed trades in this view." />
+                            )}
                           </div>
                           <p className="mt-3 text-sm leading-6 text-zinc-400">{burnout.detail}</p>
                         </Panel>
@@ -707,15 +894,35 @@ export function TradingIntelligenceApp() {
                 </AnimatePresence>
               </div>
 
-              <div className="space-y-5">
+              <div className={cn("space-y-5 transition", previewLocked && "pointer-events-none select-none opacity-35 grayscale")}>
                 <Panel title="Trader Discipline Rating" eyebrow="Composite score engine">
                   <div className="flex items-center gap-5">
-                    <ScoreDial score={discipline.overall} />
+                    <ScoreDial score={discipline.overall} label={hasScopedTrades ? `${discipline.overall}` : "No sample"} />
                     <div className="min-w-0 flex-1 space-y-3">
-                      <DiagnosticLine label="Risk management" value={`${discipline.riskManagement}`} progress={discipline.riskManagement} tone="green" />
-                      <DiagnosticLine label="Stop respect" value={`${discipline.stopRespect}`} progress={discipline.stopRespect} tone="cyan" />
-                      <DiagnosticLine label="Emotional control" value={`${discipline.emotionalControl}`} progress={discipline.emotionalControl} tone="amber" />
-                      <DiagnosticLine label="Consistency" value={`${discipline.consistency}`} progress={discipline.consistency} tone="green" />
+                      <DiagnosticLine
+                        label="Risk management"
+                        value={hasScopedTrades ? `${discipline.riskManagement}` : "No sample"}
+                        progress={discipline.riskManagement}
+                        tone="green"
+                      />
+                      <DiagnosticLine
+                        label="Stop respect"
+                        value={hasScopedTrades ? `${discipline.stopRespect}` : "No sample"}
+                        progress={discipline.stopRespect}
+                        tone="cyan"
+                      />
+                      <DiagnosticLine
+                        label="Emotional control"
+                        value={hasScopedTrades ? `${discipline.emotionalControl}` : "No sample"}
+                        progress={discipline.emotionalControl}
+                        tone="amber"
+                      />
+                      <DiagnosticLine
+                        label="Consistency"
+                        value={hasScopedTrades ? `${discipline.consistency}` : "No sample"}
+                        progress={discipline.consistency}
+                        tone="green"
+                      />
                     </div>
                   </div>
                 </Panel>
@@ -937,40 +1144,168 @@ function MetricTile({
   value,
   detail,
   icon: Icon,
-  trend
+  trend,
+  calculation,
+  onOpenCalculation
 }: {
   label: string;
   value: string;
   detail: string;
   icon: typeof Activity;
-  trend: "up" | "down";
+  trend: MetricTrend;
+  calculation?: MetricCalculation;
+  onOpenCalculation?: (calculation: MetricCalculation) => void;
 }) {
+  const isPositive = trend === "up";
+  const isNegative = trend === "down";
+
   return (
-    <div className="panel-shell p-4">
+    <button
+      type="button"
+      onClick={() => calculation && onOpenCalculation?.(calculation)}
+      className="panel-shell group w-full p-4 text-left outline-none transition hover:border-white/20 focus-visible:border-signal-cyan/60 focus-visible:ring-2 focus-visible:ring-signal-cyan/20"
+    >
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-xs uppercase text-zinc-500">{label}</p>
+          <p className="flex items-center gap-2 text-xs uppercase text-zinc-500">
+            {label}
+            {calculation && <Info className="size-3.5 text-zinc-600 transition group-hover:text-signal-cyan" />}
+          </p>
           <p className="mt-2 text-2xl font-semibold text-zinc-50">{value}</p>
           <p className="mt-1 text-sm text-zinc-500">{detail}</p>
         </div>
         <div
           className={cn(
             "grid size-10 shrink-0 place-items-center rounded-md border",
-            trend === "up"
-              ? "border-signal-green/25 bg-signal-green/10 text-signal-green"
-              : "border-signal-red/25 bg-signal-red/10 text-signal-red"
+            isPositive && "border-signal-green/25 bg-signal-green/10 text-signal-green",
+            isNegative && "border-signal-red/25 bg-signal-red/10 text-signal-red",
+            trend === "neutral" && "border-white/10 bg-white/[0.04] text-zinc-500"
           )}
         >
           <Icon className="size-5" />
         </div>
       </div>
-      <div className="mt-4 flex items-center gap-2 text-xs">
-        {trend === "up" ? <ArrowUpRight className="size-4 text-signal-green" /> : <ArrowDownRight className="size-4 text-signal-red" />}
-        <span className={trend === "up" ? "text-signal-green" : "text-signal-red"}>
-          {trend === "up" ? "Improving" : "Needs control"}
+      <div className="mt-4 flex items-center justify-between gap-3 text-xs">
+        <span className="flex items-center gap-2">
+          {isPositive && <ArrowUpRight className="size-4 text-signal-green" />}
+          {isNegative && <ArrowDownRight className="size-4 text-signal-red" />}
+          {trend === "neutral" && <Info className="size-4 text-zinc-500" />}
+          <span
+            className={cn(
+              isPositive && "text-signal-green",
+              isNegative && "text-signal-red",
+              trend === "neutral" && "text-zinc-500"
+            )}
+          >
+            {isPositive ? "Improving" : isNegative ? "Needs control" : "No sample"}
+          </span>
         </span>
+        <span className="text-zinc-600 transition group-hover:text-zinc-400">Formula</span>
       </div>
-    </div>
+    </button>
+  );
+}
+
+function PreviewGateBanner({ onImport }: { onImport: () => void }) {
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35 }}
+      className="relative overflow-hidden rounded-md border border-signal-cyan/20 bg-base-900/92 p-4 shadow-terminal"
+    >
+      <div className="absolute inset-y-0 left-0 w-1 bg-signal-cyan" />
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-start gap-4">
+          <div className="grid size-11 shrink-0 place-items-center rounded-md border border-signal-cyan/30 bg-signal-cyan/10 text-signal-cyan">
+            <Upload className="size-5" />
+          </div>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-lg font-semibold text-zinc-50">Connect trade history to activate analytics</p>
+              <span className="rounded-full border border-signal-amber/25 bg-signal-amber/10 px-2.5 py-1 text-[11px] text-signal-amber">
+                Preview locked
+              </span>
+            </div>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-zinc-400">
+              The dashboard is muted until a CSV is imported, so performance, psychology, and AI coaching are based on
+              your real trades.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            {["PnL", "Discipline", "Coach"].map((item) => (
+              <div key={item} className="min-w-[84px] rounded-md border border-white/10 bg-white/[0.03] px-3 py-2">
+                <p className="text-[11px] uppercase text-zinc-500">{item}</p>
+                <p className="mt-1 text-xs text-zinc-300">Paused</p>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={onImport}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-signal-green px-4 text-sm font-semibold text-base-950 transition hover:bg-white"
+          >
+            <Upload className="size-4" />
+            Import CSV
+          </button>
+        </div>
+      </div>
+    </motion.section>
+  );
+}
+
+function CalculationPopup({ info, onClose }: { info: MetricCalculation; onClose: () => void }) {
+  return (
+    <motion.div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/45 px-4 backdrop-blur-sm"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
+      <button type="button" aria-label="Close calculation details" className="absolute inset-0 cursor-default" onClick={onClose} />
+      <motion.div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${info.title} calculation`}
+        className="relative w-full max-w-[430px] rounded-md border border-white/12 bg-base-900 p-5 shadow-terminal"
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 8, scale: 0.98 }}
+        transition={{ duration: 0.18 }}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-signal-cyan">Calculation</p>
+            <h4 className="mt-1 text-lg font-semibold text-zinc-50">{info.title}</h4>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid size-8 shrink-0 place-items-center rounded-md border border-white/10 text-zinc-500 transition hover:border-white/25 hover:text-white"
+            aria-label="Close"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <p className="mt-3 text-sm leading-6 text-zinc-400">{info.description}</p>
+        <div className="mt-4 rounded-md border border-white/10 bg-base-950/80 p-3">
+          <p className="text-[11px] uppercase text-zinc-500">Formula</p>
+          <p className="mt-1 text-sm font-medium text-zinc-100">{info.formula}</p>
+        </div>
+        <div className="mt-4 space-y-2">
+          {info.inputs.map((input) => (
+            <div key={input} className="flex items-start gap-2 text-sm text-zinc-400">
+              <span className="mt-2 size-1.5 shrink-0 rounded-full bg-signal-cyan" />
+              <span>{input}</span>
+            </div>
+          ))}
+        </div>
+        {info.note && <p className="mt-4 text-xs leading-5 text-zinc-500">{info.note}</p>}
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -1044,6 +1379,8 @@ function EmotionRow({ emotion }: { emotion: ReturnType<typeof calculateEmotionSt
 }
 
 function BehaviorIndicatorTile({ indicator }: { indicator: ReturnType<typeof buildBehaviorIndicators>[number] }) {
+  const hasScore = indicator.value !== "No sample" && indicator.label !== "No behavior sample";
+
   return (
     <div className="rounded-md border border-white/10 bg-white/[0.03] p-4">
       <div className="flex items-start justify-between gap-3">
@@ -1062,7 +1399,7 @@ function BehaviorIndicatorTile({ indicator }: { indicator: ReturnType<typeof bui
           </p>
         </div>
         <span className="rounded-full border border-white/10 bg-base-900 px-2 py-1 text-xs text-zinc-500">
-          {indicator.score.toFixed(0)}
+          {hasScore ? indicator.score.toFixed(0) : "N/A"}
         </span>
       </div>
       <p className="mt-3 text-xs leading-5 text-zinc-500">{indicator.detail}</p>
@@ -1075,7 +1412,7 @@ function BehaviorIndicatorTile({ indicator }: { indicator: ReturnType<typeof bui
             indicator.tone === "amber" && "bg-signal-amber",
             indicator.tone === "red" && "bg-signal-red"
           )}
-          style={{ width: `${Math.max(6, indicator.score)}%` }}
+          style={{ width: hasScore ? `${Math.max(6, indicator.score)}%` : "0%" }}
         />
       </div>
     </div>
@@ -1188,12 +1525,18 @@ function DiagnosticLine({
   );
 }
 
-function ScoreDial({ score }: { score: number }) {
+function ScoreDial({ score, label }: { score: number; label?: string }) {
+  const displayLabel = label ?? `${score}`;
+  const hasScore = displayLabel !== "No sample";
+
   return (
-    <div className="relative grid size-32 shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(#4dff88 ${score * 3.6}deg, rgba(255,255,255,0.08) 0deg)` }}>
+    <div
+      className="relative grid size-32 shrink-0 place-items-center rounded-full"
+      style={{ background: `conic-gradient(${hasScore ? "#4dff88" : "rgba(255,255,255,0.16)"} ${score * 3.6}deg, rgba(255,255,255,0.08) 0deg)` }}
+    >
       <div className="grid size-[104px] place-items-center rounded-full border border-white/10 bg-base-900">
         <div className="text-center">
-          <p className="text-3xl font-semibold text-zinc-50">{score}</p>
+          <p className={cn("font-semibold text-zinc-50", hasScore ? "text-3xl" : "px-3 text-sm")}>{displayLabel}</p>
           <p className="text-[11px] uppercase text-zinc-500">Score</p>
         </div>
       </div>
@@ -1371,6 +1714,52 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
   );
 }
 
+function ImportCsvPrompt({ onImport }: { onImport: () => void }) {
+  return (
+    <div className="absolute inset-0 grid place-items-center rounded-md bg-base-950/62 px-4 backdrop-blur-[3px]">
+      <div className="w-full max-w-[430px] overflow-hidden rounded-md border border-white/15 bg-base-900/95 text-left shadow-terminal">
+        <div className="border-b border-white/10 bg-white/[0.035] px-5 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">Preview mode</span>
+            <span className="rounded-full border border-signal-amber/25 bg-signal-amber/10 px-2.5 py-1 text-[11px] text-signal-amber">
+              CSV required
+            </span>
+          </div>
+        </div>
+        <div className="p-5">
+          <div className="flex items-start gap-4">
+            <div className="grid size-12 shrink-0 place-items-center rounded-md border border-signal-cyan/30 bg-signal-cyan/10 text-signal-cyan">
+              <Upload className="size-5" />
+            </div>
+            <div>
+              <p className="text-lg font-semibold text-zinc-50">Import your trade CSV</p>
+              <p className="mt-2 text-sm leading-6 text-zinc-400">
+                Analytics are muted until real trade history is connected. Upload a broker export to unlock performance,
+                psychology, and coaching.
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {["PnL", "Behavior", "Coach"].map((item) => (
+              <div key={item} className="rounded-md border border-white/10 bg-base-950/70 px-3 py-2 text-center">
+                <p className="text-[11px] uppercase text-zinc-500">{item}</p>
+                <p className="mt-1 text-xs text-zinc-300">Locked</p>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={onImport}
+            className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-md bg-signal-green px-4 py-2.5 text-sm font-semibold text-base-950 transition hover:bg-white"
+          >
+            <Upload className="size-4" />
+            Import CSV
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type ChartPayload = {
   dataKey: string;
   name: string;
@@ -1434,6 +1823,19 @@ function ChartTooltip({
       ))}
     </div>
   );
+}
+
+function formatProfitFactor(summary: ReturnType<typeof calculateSummary>) {
+  if (!summary.totalTrades) return "No sample";
+  if (!summary.grossLoss) return "No losses";
+  return summary.profitFactor.toFixed(2);
+}
+
+function formatRevengeLossShareValue(summary: ReturnType<typeof calculateSummary>) {
+  if (!summary.totalTrades) return "No sample";
+  if (!summary.grossLoss) return "No losses";
+  if (!summary.revengeLossAmount) return "None";
+  return formatPercent(summary.revengeLossShare);
 }
 
 function buildZeroPlaneCurve(points: ReturnType<typeof buildEquityCurve>) {
